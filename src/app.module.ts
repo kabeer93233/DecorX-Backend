@@ -27,7 +27,8 @@ import { ContactModule } from './contact/contact.module';
       autoLoadEntities : true,
       ssl: {
         rejectUnauthorized: false,
-      }
+      },
+      synchronize : false
     }),
     OrdersModule,
     AuthModule,
