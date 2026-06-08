@@ -13,8 +13,8 @@ export class ContactService {
             port : 587,
             secure : false,
             auth:{
-              user: "mk1748418@gmail.com",
-              pass: "bwma euai dpku fstj"
+              user: process.env.EMAIL_USER,
+              pass: process.env.EMAIL_PASS
             }
           })
         }
@@ -22,11 +22,11 @@ export class ContactService {
   async sendMessage(dto: ContactDto) {
     await this.transport.sendMail({
 
-      from: `"DecorX Contact Form" <mk1748418@gmail.com>`,
+      from: `DecorX Contact Form`,
 
       replyTo: dto.email,
 
-      to: "mk1748418@gmail.com",
+      to: process.env.EMAIL_USER,
 
       subject: `DecorX | ${dto.subject}`,
 

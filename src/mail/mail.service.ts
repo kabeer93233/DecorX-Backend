@@ -10,15 +10,15 @@ export class MailService {
           port : 587,
           secure : false,
           auth:{
-            user: "mk1748418@gmail.com",
-            pass: "bwma euai dpku fstj"
+            user: process.env.EMAIL_USER,
+            pass: process.env.EMAIL_PASS
           }
         })
       }
     async sentOtp(verificationToken:string, to:string){
     const verificationLink = `http://localhost:5173/verify-email?token=${verificationToken}`;
     await this.transport.sendMail({
-      from: "mk1748418@gmail.com",
+      from: process.env.EMAIL_USER,
       to: to,
       subject: "OTP from DecoeX",
       html: `
