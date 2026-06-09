@@ -28,6 +28,8 @@
     "@nestjs/mapped-types": "*",
     "@nestjs/platform-express": "^11.1.24",
     "@nestjs/typeorm": "^11.0.1",
+    "@swc/core": "^1.15.40",
+    "@swc/helpers": "^0.5.23",
     "@types/bcrypt": "^6.0.0",
     "@types/uuid": "^9.0.8",
     "@vercel/node": "^5.8.12",
