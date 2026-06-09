@@ -9,7 +9,7 @@ import * as jwt from 'jsonwebtoken';
 import { ConfigService } from '@nestjs/config';
 import { RefreshToken } from './entities/refreshToken.entity';
 import { v4 as uuidv4 } from 'uuid';
-import { MailService } from 'src/mail/mail.service';
+import { MailService } from '../mail/mail.service';
 
 @Injectable()
 export class AuthService {

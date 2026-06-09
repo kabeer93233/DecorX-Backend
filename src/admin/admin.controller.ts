@@ -14,10 +14,10 @@ import { AdminService }
 from './admin.service';
 
 import { AuthGuard }
-from 'src/auth/guards/auth/auth.guard';
+from '../auth/guards/auth/auth.guard';
 
 import { AdminGuard }
-from 'src/admin/guards/admin/admin.guard';
+from './guards/admin/admin.guard';
 
 @Controller('admin')
 

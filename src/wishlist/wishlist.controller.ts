@@ -18,7 +18,7 @@ import { CreateWishlistDTO }
 from './Wishlist Dto/wishlist.dto';
 
 import { AuthGuard }
-from 'src/auth/guards/auth/auth.guard';
+from '../auth/guards/auth/auth.guard';
 
 @UseGuards(AuthGuard)
 

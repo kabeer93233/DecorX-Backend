@@ -9,7 +9,7 @@ import { Cart }
 from './cart.entity';
 
 import { Product }
-from 'src/product/products.entity';
+from '../../product/products.entity';
 
 @Entity()
 

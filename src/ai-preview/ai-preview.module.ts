@@ -2,7 +2,7 @@ import { Module } from '@nestjs/common';
 import { AiPreviewController } from './ai-preview.controller';
 import { AiPreviewService } from './ai-preview.service';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { Auth } from 'src/auth/entities/auth.entity';
+import { Auth } from '../auth/entities/auth.entity';
 
 @Module({
   imports : [

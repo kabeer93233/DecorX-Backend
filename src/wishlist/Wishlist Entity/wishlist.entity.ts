@@ -8,10 +8,10 @@ import {
 } from 'typeorm';
 
 import { Auth }
-from 'src/auth/entities/auth.entity';
+from '../../auth/entities/auth.entity';
 
 import { Product }
-from 'src/product/products.entity';
+from '../../product/products.entity';
 
 @Entity()
 

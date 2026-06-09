@@ -2,7 +2,7 @@ import { Module } from '@nestjs/common';
 import { OrdersController } from './orders.controller';
 import { OrdersService } from './orders.service';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { Auth } from 'src/auth/entities/auth.entity';
+import { Auth } from '../auth/entities/auth.entity';
 
 @Module({
   imports:[

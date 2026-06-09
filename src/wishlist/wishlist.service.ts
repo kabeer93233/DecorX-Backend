@@ -18,7 +18,7 @@ import { CreateWishlistDTO }
 from './Wishlist Dto/wishlist.dto';
 
 import { Product }
-from 'src/product/products.entity';
+from '../product/products.entity';
 
 @Injectable()
 

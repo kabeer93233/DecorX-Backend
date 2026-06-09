@@ -5,7 +5,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { Auth } from './entities/auth.entity';
 import { RefreshToken } from './entities/refreshToken.entity';
 import { AuthGuard } from './guards/auth/auth.guard';
-import { MailModule } from 'src/mail/mail.module';
+import { MailModule } from '../mail/mail.module';
 
 @Module({
   imports : [TypeOrmModule.forFeature([Auth, RefreshToken]), MailModule],

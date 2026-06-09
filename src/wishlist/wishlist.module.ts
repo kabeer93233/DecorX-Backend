@@ -14,8 +14,8 @@ import { Wishlist }
 from './Wishlist Entity/wishlist.entity';
 
 import { Product }
-from 'src/product/products.entity';
-import { AuthModule } from 'src/auth/auth.module';
+from '../product/products.entity';
+import { AuthModule } from '../auth/auth.module';
 
 @Module({
 

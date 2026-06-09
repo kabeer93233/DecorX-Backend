@@ -7,8 +7,8 @@ import {
 } from "typeorm";
 
 import { Wishlist }
-from 'src/wishlist/Wishlist Entity/wishlist.entity';
-import { Cart } from "src/cart/entities/cart.entity";
+from '../../wishlist/Wishlist Entity/wishlist.entity';
+import { Cart } from '../../cart/entities/cart.entity';
 
 @Entity()
 

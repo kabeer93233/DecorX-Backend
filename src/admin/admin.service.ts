@@ -12,7 +12,7 @@ import { Repository }
 from 'typeorm';
 
 import { Auth }
-from 'src/auth/entities/auth.entity';
+from '../auth/entities/auth.entity';
 
 @Injectable()
 

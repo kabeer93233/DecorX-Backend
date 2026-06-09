@@ -10,7 +10,7 @@ import { Repository }
 from 'typeorm';
 
 import { Auth }
-from 'src/auth/entities/auth.entity';
+from '../../entities/auth.entity';
 
 import {
   ForbiddenException,

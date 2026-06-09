@@ -7,7 +7,7 @@ import {
 } from 'typeorm';
 
 import { Auth }
-from 'src/auth/entities/auth.entity';
+from '../../auth/entities/auth.entity';
 
 import { CartItem }
 from './cart-item.entity';
