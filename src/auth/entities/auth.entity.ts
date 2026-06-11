@@ -5,7 +5,8 @@ import {
   OneToMany,
   CreateDateColumn,
 } from "typeorm";
-
+import { Order }
+from 'src/orders/entities/order.entity';
 import { Wishlist }
 from '../../wishlist/Wishlist Entity/wishlist.entity';
 import { Cart } from '../../cart/entities/cart.entity';
@@ -102,4 +103,10 @@ export class Auth {
   )
 
   cart!: Cart[];
+
+  @OneToMany(
+    () => Order,
+    (order) => order.user,
+  )
+  orders!: Order[];
 }
