@@ -11,8 +11,8 @@ import {
 } from '@nestjs/common';
 import { CartService } from './cart.service';
 import { AddToCartDto } from './dto/add-to-cart.dto';
-import { AuthGuard } from 'src/auth/guards/auth/auth.guard';
-import { EmailVerifiedGuard } from 'src/auth/guards/email-verified.guard';
+import { AuthGuard } from '../auth/guards/auth/auth.guard';
+import { EmailVerifiedGuard } from '../auth/guards/email-verified.guard';
 
   // @UseGuards(
   //   AuthGuard,

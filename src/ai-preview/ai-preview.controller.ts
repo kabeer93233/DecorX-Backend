@@ -8,10 +8,10 @@ import { AiPreviewService }
 from './ai-preview.service';
 
 import { AuthGuard }
-from 'src/auth/guards/auth/auth.guard';
+from '../auth/guards/auth/auth.guard';
 
 import { EmailVerifiedGuard }
-from 'src/auth/guards/email-verified.guard';
+from '../auth/guards/email-verified.guard';
 
 @Controller('ai-preview')
 

@@ -2,7 +2,7 @@ import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Put, U
 import { ProductService } from './product.service';
 import { CreateProductDTO } from './product dto/product.dto';
 import { Product } from './products.entity';
-import { AuthGuard } from 'src/auth/guards/auth/auth.guard';
+import { AuthGuard } from '../auth/guards/auth/auth.guard';
 import { storage } from '../cloudinary/cloudinary.storage';
 import { FileInterceptor } from '@nestjs/platform-express';
 
