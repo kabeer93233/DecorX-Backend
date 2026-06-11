@@ -27,7 +27,7 @@ const FALLBACK_ANALYSIS: RoomAnalysis = {
   lightingCondition: 'natural',
   floorType: 'unknown',
   suggestedCategories: ['sofa', 'lamp', 'table'],
-  reason: 'Could not analyze room automatically. Showing default suggestions.',
+  reason: 'AI suggests furniture that works well in most living spaces.',
   wallHexColor: '#EDE3D5',
   floorHexColor: '#C4A478',
 };

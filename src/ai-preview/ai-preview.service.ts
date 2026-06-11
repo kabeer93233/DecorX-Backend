@@ -1,135 +1,82 @@
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { SavedDesign } from './entities/saved-design.entity';
+import axios from 'axios';
+import FormData from 'form-data';
 import { AiDesign } from './entities/ai-design.entity';
 import { GeminiService } from './gemini.service';
-import { PlacementService } from './placement.service';
-import { SuggestPlacementDto } from './dto/suggest-placement.dto';
-import { RecommendProductsDto } from './dto/recommend-products.dto';
-import { SaveDesignDto } from './dto/save-design.dto';
 import { AnalyzeRoomDto } from './dto/analyze-room.dto';
 import { SuggestPlacement2dDto } from './dto/suggest-placement-2d.dto';
 import { SaveAiDesignDto } from './dto/save-ai-design.dto';
 
-// 2D canvas placement rules — multiple positions per category to avoid stacking
+// Scale values are tuned for a 900×600 canvas with typical Unsplash product images (~800–1080px wide).
+// xPct/yPct are fractions of canvas dimensions. Multiple positions cycle via existingCount.
 const PLACEMENT_RULES: Record<string, Array<{ xPct: number; yPct: number; scale: number; reason: string }>> = {
-  sofa:       [
-    { xPct: 0.22, yPct: 0.60, scale: 0.62, reason: 'Sofa placed against the main wall for a classic living room arrangement.' },
-    { xPct: 0.55, yPct: 0.60, scale: 0.58, reason: 'Second sofa creating an L-shaped seating area.' },
+  sofa: [
+    { xPct: 0.22, yPct: 0.68, scale: 0.30, reason: 'Sofa placed along the main wall — classic living room focal point.' },
+    { xPct: 0.60, yPct: 0.68, scale: 0.28, reason: 'Second sofa forming an L-shaped seating arrangement.' },
+    { xPct: 0.38, yPct: 0.72, scale: 0.30, reason: 'Sofa centred for open-plan layouts.' },
   ],
-  loveseat:   [
-    { xPct: 0.25, yPct: 0.58, scale: 0.50, reason: 'Loveseat near the main wall to complement the seating area.' },
-    { xPct: 0.62, yPct: 0.56, scale: 0.46, reason: 'Loveseat angled for a cozy conversation corner.' },
+  loveseat: [
+    { xPct: 0.25, yPct: 0.66, scale: 0.24, reason: 'Loveseat beside the main wall to complement the seating area.' },
+    { xPct: 0.62, yPct: 0.64, scale: 0.22, reason: 'Loveseat angled for a cozy conversation corner.' },
   ],
-  chair:      [
-    { xPct: 0.62, yPct: 0.54, scale: 0.38, reason: 'Chair to the right — complements a sofa or accent table.' },
-    { xPct: 0.12, yPct: 0.52, scale: 0.36, reason: 'Accent chair in the left corner for balance.' },
-    { xPct: 0.75, yPct: 0.58, scale: 0.36, reason: 'Reading chair in the far corner.' },
+  chair: [
+    { xPct: 0.72, yPct: 0.66, scale: 0.18, reason: 'Accent chair to the right — complements the main sofa.' },
+    { xPct: 0.12, yPct: 0.64, scale: 0.17, reason: 'Reading chair in the left corner for balance.' },
+    { xPct: 0.82, yPct: 0.68, scale: 0.18, reason: 'Accent chair in the far corner.' },
+    { xPct: 0.50, yPct: 0.63, scale: 0.16, reason: 'Chair placed centrally as a conversation piece.' },
   ],
-  table:      [
-    { xPct: 0.38, yPct: 0.56, scale: 0.46, reason: 'Coffee table centred between seating areas.' },
-    { xPct: 0.20, yPct: 0.48, scale: 0.38, reason: 'Side table next to the sofa for convenience.' },
+  table: [
+    { xPct: 0.38, yPct: 0.66, scale: 0.24, reason: 'Coffee table centred between seating areas.' },
+    { xPct: 0.20, yPct: 0.62, scale: 0.18, reason: 'Side table beside the sofa for convenience.' },
+    { xPct: 0.72, yPct: 0.62, scale: 0.18, reason: 'Side table on the right of the seating area.' },
+    { xPct: 0.42, yPct: 0.72, scale: 0.34, reason: 'Dining table centred in the room.' },
   ],
-  stool:      [
-    { xPct: 0.62, yPct: 0.56, scale: 0.28, reason: 'Accent stool as a flexible side piece.' },
-    { xPct: 0.42, yPct: 0.52, scale: 0.26, reason: 'Ottoman stool in front of a chair.' },
+  stool: [
+    { xPct: 0.60, yPct: 0.64, scale: 0.13, reason: 'Accent stool as a flexible side piece.' },
+    { xPct: 0.38, yPct: 0.62, scale: 0.12, reason: 'Ottoman stool in front of a chair.' },
+    { xPct: 0.48, yPct: 0.66, scale: 0.13, reason: 'Stool used as a coffee table alternative.' },
   ],
-  lamp:       [
-    { xPct: 0.78, yPct: 0.42, scale: 0.26, reason: 'Floor lamp in the corner for warm ambient lighting.' },
-    { xPct: 0.08, yPct: 0.40, scale: 0.24, reason: 'Table lamp on the left side for balanced lighting.' },
+  lamp: [
+    { xPct: 0.84, yPct: 0.52, scale: 0.16, reason: 'Floor lamp in the corner for warm ambient lighting.' },
+    { xPct: 0.06, yPct: 0.50, scale: 0.15, reason: 'Floor lamp on the left side for balanced lighting.' },
+    { xPct: 0.55, yPct: 0.56, scale: 0.12, reason: 'Table lamp on a side table.' },
   ],
   decoration: [
-    { xPct: 0.72, yPct: 0.38, scale: 0.22, reason: 'Decorative piece placed at eye level as an accent.' },
-    { xPct: 0.18, yPct: 0.36, scale: 0.20, reason: 'Vase or plant in the corner for a natural touch.' },
+    { xPct: 0.70, yPct: 0.54, scale: 0.09, reason: 'Decorative accent placed at eye level.' },
+    { xPct: 0.18, yPct: 0.52, scale: 0.08, reason: 'Vase or plant in the corner for a natural touch.' },
+    { xPct: 0.44, yPct: 0.50, scale: 0.08, reason: 'Centrepiece decoration on a surface.' },
+    { xPct: 0.80, yPct: 0.56, scale: 0.07, reason: 'Small decorative item beside a lamp.' },
   ],
-  cabinet:    [
-    { xPct: 0.06, yPct: 0.38, scale: 0.52, reason: 'Cabinet against the left wall for storage and display.' },
-    { xPct: 0.82, yPct: 0.38, scale: 0.50, reason: 'Bookcase on the right wall.' },
+  cabinet: [
+    { xPct: 0.05, yPct: 0.54, scale: 0.26, reason: 'Cabinet against the left wall for storage and display.' },
+    { xPct: 0.86, yPct: 0.54, scale: 0.25, reason: 'Bookcase on the right wall.' },
+    { xPct: 0.45, yPct: 0.50, scale: 0.24, reason: 'Cabinet centred against the back wall.' },
   ],
-  rug:        [
-    { xPct: 0.35, yPct: 0.65, scale: 0.82, reason: 'Area rug anchoring the seating zone.' },
+  rug: [
+    { xPct: 0.40, yPct: 0.76, scale: 0.52, reason: 'Area rug anchoring the main seating zone.' },
+    { xPct: 0.50, yPct: 0.78, scale: 0.58, reason: 'Large rug defining the central floor area.' },
+  ],
+  bed: [
+    { xPct: 0.38, yPct: 0.68, scale: 0.33, reason: 'Bed placed centrally against the main wall.' },
+    { xPct: 0.52, yPct: 0.70, scale: 0.36, reason: 'King bed centred in the bedroom.' },
+  ],
+  mirror: [
+    { xPct: 0.10, yPct: 0.44, scale: 0.18, reason: 'Mirror leaning against the wall to add depth and light.' },
+    { xPct: 0.80, yPct: 0.42, scale: 0.16, reason: 'Mirror on the right wall to visually expand the space.' },
   ],
 };
 
 @Injectable()
 export class AiPreviewService {
+  private readonly logger = new Logger(AiPreviewService.name);
+
   constructor(
-    @InjectRepository(SavedDesign)
-    private readonly designRepo: Repository<SavedDesign>,
     @InjectRepository(AiDesign)
     private readonly aiDesignRepo: Repository<AiDesign>,
     private readonly gemini: GeminiService,
-    private readonly placement: PlacementService,
   ) {}
-
-  // ── 3D EDITOR ENDPOINTS ───────────────────────────────────────────
-
-  async recommendProducts(dto: RecommendProductsDto) {
-    const result = await this.gemini.recommendProducts(
-      dto.roomType,
-      dto.alreadyPlacedCategories ?? [],
-    );
-    return { success: true, data: result };
-  }
-
-  suggestPlacement(dto: SuggestPlacementDto) {
-    const result = this.placement.suggest(
-      dto.roomId,
-      dto.productCategory,
-      dto.productWidth,
-      dto.productDepth,
-      dto.existingItems ?? [],
-    );
-    return { success: true, data: result };
-  }
-
-  async saveDesign(dto: SaveDesignDto, userId: number) {
-    if (dto.designId) {
-      const design = await this.designRepo.findOne({ where: { id: dto.designId } });
-      if (!design) throw new NotFoundException('Design not found');
-      if (design.userId !== userId) throw new ForbiddenException();
-      await this.designRepo.update(dto.designId, {
-        items: dto.items,
-        cameraState: dto.cameraState ?? null,
-        screenshotUrl: dto.screenshotUrl ?? null,
-        name: dto.name ?? design.name,
-      });
-      return { success: true, data: { id: dto.designId } };
-    }
-    const design = this.designRepo.create({
-      userId, roomId: dto.roomId, name: dto.name ?? 'My Design',
-      items: dto.items, cameraState: dto.cameraState ?? null, screenshotUrl: dto.screenshotUrl ?? null,
-    });
-    const saved = await this.designRepo.save(design);
-    return { success: true, data: { id: saved.id, createdAt: saved.createdAt } };
-  }
-
-  async getMyDesigns(userId: number) {
-    const designs = await this.designRepo.find({
-      where: { userId, isDeleted: false },
-      order: { updatedAt: 'DESC' },
-      select: ['id', 'roomId', 'name', 'screenshotUrl', 'createdAt', 'updatedAt'],
-    });
-    return { success: true, data: designs };
-  }
-
-  async getDesign(id: string, userId: number) {
-    const design = await this.designRepo.findOne({ where: { id, isDeleted: false } });
-    if (!design) throw new NotFoundException('Design not found');
-    if (design.userId !== userId) throw new ForbiddenException();
-    return { success: true, data: design };
-  }
-
-  async deleteDesign(id: string, userId: number) {
-    const design = await this.designRepo.findOne({ where: { id } });
-    if (!design) throw new NotFoundException();
-    if (design.userId !== userId) throw new ForbiddenException();
-    await this.designRepo.update(id, { isDeleted: true });
-    return { success: true };
-  }
-
-  // ── 2D AI DESIGNER ENDPOINTS ──────────────────────────────────────
 
   async analyzeRoom(dto: AnalyzeRoomDto) {
     const analysis = await this.gemini.analyzeRoom(dto.roomImageUrl);
@@ -137,32 +84,36 @@ export class AiPreviewService {
   }
 
   async suggestPlacement2d(dto: SuggestPlacement2dDto) {
-    // Try Gemini vision placement when room image is provided
+    const key = dto.productCategory.toLowerCase();
+    const rules = PLACEMENT_RULES[key] ?? [
+      { xPct: 0.38, yPct: 0.62, scale: 0.22, reason: 'Balanced central placement.' },
+    ];
+
+    // Try Gemini vision placement when room image is available
     if (dto.roomImageUrl) {
-      const geminiResult = await this.gemini.suggestFurniturePlacement2d(
-        dto.productCategory,
-        dto.roomImageUrl,
-      );
-      if (geminiResult) {
-        return {
-          success: true,
-          data: {
-            x: Math.round(geminiResult.xPct * dto.canvasWidth),
-            y: Math.round(geminiResult.yPct * dto.canvasHeight),
-            scale: geminiResult.scale,
-            rotation: geminiResult.rotation,
-            reason: `AI placement: ${geminiResult.reason}`,
-          },
-        };
-      }
+      try {
+        const geminiResult = await this.gemini.suggestFurniturePlacement2d(
+          dto.productCategory,
+          dto.roomImageUrl,
+        );
+        if (geminiResult) {
+          return {
+            success: true,
+            data: {
+              x: Math.round(geminiResult.xPct * dto.canvasWidth),
+              y: Math.round(geminiResult.yPct * dto.canvasHeight),
+              scale: geminiResult.scale,
+              rotation: geminiResult.rotation,
+              reason: `AI placement: ${geminiResult.reason}`,
+            },
+          };
+        }
+      } catch { /* fall through to rule-based */ }
     }
 
-    // Fallback: rule-based with rotation through positions
-    const key = dto.productCategory.toLowerCase();
-    const rules = PLACEMENT_RULES[key] ?? [{ xPct: 0.35, yPct: 0.60, scale: 0.48, reason: 'Balanced central placement.' }];
-    // cycle through positions so adding same category twice doesn't stack
-    const idx = 0;
-    const rule = rules[idx];
+    // Rule-based: cycle through positions so same category doesn't stack
+    const count = dto.existingCount ?? 0;
+    const rule = rules[count % rules.length];
     return {
       success: true,
       data: {
@@ -176,8 +127,40 @@ export class AiPreviewService {
   }
 
   async processProductImage(imageUrl: string) {
-    const box = await this.gemini.getProductBoundingBox(imageUrl);
-    return { success: true, data: box };
+    const apiKey = process.env.CLIPDROP_API_KEY;
+    if (!apiKey) {
+      this.logger.warn('CLIPDROP_API_KEY not set — background removal skipped');
+      return { success: true, data: null };
+    }
+
+    try {
+      // Fetch source image as buffer
+      const imgRes = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 15000 });
+      const contentType = (imgRes.headers['content-type'] as string) || 'image/jpeg';
+
+      // Send to Clipdrop remove-background API
+      const form = new FormData();
+      form.append('image_file', Buffer.from(imgRes.data), {
+        filename: 'product.jpg',
+        contentType,
+      });
+
+      const result = await axios.post(
+        'https://clipdrop-api.co/remove-background/v1',
+        form,
+        {
+          headers: { ...form.getHeaders(), 'x-api-key': apiKey },
+          responseType: 'arraybuffer',
+          timeout: 30000,
+        },
+      );
+
+      const base64 = Buffer.from(result.data).toString('base64');
+      return { success: true, data: { cleanImageDataUrl: `data:image/png;base64,${base64}` } };
+    } catch (err: any) {
+      this.logger.error('Clipdrop BG removal failed: ' + (err?.response?.status ?? err?.message));
+      return { success: true, data: null };
+    }
   }
 
   async saveAiDesign(dto: SaveAiDesignDto, userId: number) {

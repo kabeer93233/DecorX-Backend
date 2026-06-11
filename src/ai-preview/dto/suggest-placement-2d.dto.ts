@@ -13,4 +13,8 @@ export class SuggestPlacement2dDto {
   @IsOptional()
   @IsString()
   roomImageUrl?: string;
+
+  @IsOptional()
+  @IsNumber()
+  existingCount?: number;
 }
