@@ -15,10 +15,10 @@ import { OrdersService }
 from './orders.service';
 
 import { AuthGuard }
-from 'src/auth/guards/auth/auth.guard';
+from '../auth/guards/auth/auth.guard';
 
 import { EmailVerifiedGuard }
-from 'src/auth/guards/email-verified.guard';
+from '../auth/guards/email-verified.guard';
 
 import { CreateOrderDto }
 from './dto/create-order.dto';
