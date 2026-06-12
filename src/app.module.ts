@@ -28,7 +28,7 @@ import { ContactModule } from './contact/contact.module';
       ssl: {
         rejectUnauthorized: false,
       },
-      synchronize : false
+      synchronize : true
     }),
     OrdersModule,
     AuthModule,
