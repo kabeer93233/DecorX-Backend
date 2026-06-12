@@ -16,7 +16,7 @@ export class MailService {
         })
       }
     async sentOtp(verificationToken:string, to:string){
-    const verificationLink = `http://localhost:5173/verify-email?token=${verificationToken}`;
+    const verificationLink = `https://decor-x-front-end.vercel.app/verify-email?token=${verificationToken}`;
     await this.transport.sendMail({
       from: process.env.EMAIL_USER,
       to: to,
