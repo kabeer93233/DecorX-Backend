@@ -290,6 +290,99 @@ Field rules:
     }
   }
 
+  // ── Whole-room redesign: AI arranges ALL items like an expert designer ────────
+
+  async redesignRoom(
+    roomImageUrl: string,
+    floorLineY: number,
+    items: Array<{ id: string; productName: string; category: string; widthCm: number; heightCm: number }>,
+    canvasW = 900,
+    canvasH = 600,
+  ): Promise<{ placements: Array<{ id: string; cx_pct: number; foot_y_pct: number }>; designTheme: string }> {
+    const FALLBACK = { placements: [] as Array<{ id: string; cx_pct: number; foot_y_pct: number }>, designTheme: '' };
+    if (!this.groqKey && !this.openrouterKey) return FALLBACK;
+    if (!items.length) return FALLBACK;
+
+    // Give AI concrete reference points derived from the actual detected floor line
+    const fl       = clamp(floorLineY, 0.42, 0.85);
+    const midFY    = +(fl + 0.14).toFixed(2);
+    const fgFY     = 0.87;
+    const surfFY   = +(fl - 0.10).toFixed(2);
+
+    const itemList = items
+      .map(i => `  • id="${i.id}"  name="${i.productName}"  category=${i.category}  real_size=${i.widthCm}cm wide × ${i.heightCm}cm tall`)
+      .join('\n');
+
+    const prompt = `You are a world-class interior designer. Arrange furniture in this room photo like an expert.
+
+LOOK AT THE PHOTO carefully — notice where the floor is, where the walls are, and how perspective works.
+
+CANVAS SIZE: ${canvasW}×${canvasH} pixels. Coordinates as fractions 0.0→1.0.
+FLOOR LINE: The back wall meets the floor at approximately y_pct = ${fl.toFixed(2)} in this image.
+
+PERSPECTIVE REFERENCE — where each furniture type's FEET/BASE should sit (y_pct):
+  • Sofas, cabinets, bookshelves (against back/side wall): foot_y_pct ≈ ${fl.toFixed(2)}
+  • Floor lamps (beside sofa at back wall):                foot_y_pct ≈ ${fl.toFixed(2)}
+  • Coffee tables, rugs (mid-floor between camera & sofa): foot_y_pct ≈ ${midFY}
+  • Chairs, stools (open floor):                           foot_y_pct ≈ ${midFY}
+  • Accent chairs, ottomans (closer to camera):            foot_y_pct ≈ ${fgFY}
+  • Table lamps (on side table beside sofa):               foot_y_pct ≈ ${surfFY}
+  • Pendant/chandelier (ceiling):                          foot_y_pct ≈ 0.03
+
+ITEMS TO PLACE:
+${itemList}
+
+FOR EACH ITEM return:
+  • cx_pct   — horizontal center as fraction of width (0.05 left edge → 0.95 right edge)
+  • foot_y_pct — where the item's base/feet sit, as fraction of height (see reference above)
+
+INTERIOR DESIGN RULES:
+1. SEATING GROUP: Arrange sofas facing each other or a focal wall — create a U or L shape.
+2. COFFEE TABLE: Center between sofas (same cx_pct as midpoint of sofas), foot_y_pct ≈ ${midFY}.
+3. FLOOR LAMPS: In corners or at sofa ends — cx_pct near 0.08 or 0.88.
+4. TABLE LAMPS: Beside seating on side table — cx_pct near sofa end.
+5. PENDANTS: Centered above seating area (cx_pct ≈ 0.45–0.55), foot_y_pct ≈ 0.03.
+6. CABINETS: Against left or right wall — cx_pct near 0.07 or 0.88.
+7. RUG: Centered under seating group.
+8. BALANCE: Spread items across the room. Never cluster everything in the center.
+9. TRAFFIC FLOW: Leave walkable space — items should not block paths.
+10. SECOND SOFA: Perpendicular or parallel to first, forming a complete seating arrangement.
+
+Return ONLY valid JSON — no markdown, no extra text:
+{
+  "placements": [
+    {"id": "EXACT_ITEM_ID_FROM_LIST", "cx_pct": 0.25, "foot_y_pct": ${fl.toFixed(2)}},
+    ...one entry per item, ALL items must be included...
+  ],
+  "designTheme": "One sentence describing this arrangement"
+}`;
+
+    try {
+      const { data, mimeType } = await toBase64(roomImageUrl);
+      const raw   = await callVisionAI(data, mimeType, prompt, this.groqKey, this.openrouterKey, this.logger, 700);
+      const clean = raw.replace(/```json|```/g, '').trim();
+      const json  = JSON.parse(clean);
+
+      if (!Array.isArray(json.placements)) return FALLBACK;
+
+      const placements = json.placements
+        .filter((p: any) => typeof p.id === 'string' && isNum(p.cx_pct) && isNum(p.foot_y_pct))
+        .map((p: any) => ({
+          id:         p.id,
+          cx_pct:     clamp(+p.cx_pct,     0.05, 0.95),
+          foot_y_pct: clamp(+p.foot_y_pct, 0.01, 0.96),
+        }));
+
+      return {
+        placements,
+        designTheme: typeof json.designTheme === 'string' ? json.designTheme : '',
+      };
+    } catch (err: any) {
+      this.logger.warn(`redesignRoom failed: ${err?.message}`);
+      return FALLBACK;
+    }
+  }
+
   // ── AI-driven per-item placement ─────────────────────────────────────────────
 
   async placeItem(
@@ -322,32 +415,37 @@ Field rules:
     const prompt = `You are an interior design AI. Look at the room photo carefully.
 
 CANVAS: ${canvasW}×${canvasH}px
-PERSPECTIVE: perspScale(y) = 0.55 + (y/${canvasH})×0.70  →  items lower in canvas appear larger/closer
-FLOOR LINE: y≈${floorYpx}px (fraction ${floorLineY.toFixed(2)})
-FLOOR AREA: feet of floor items sit between y=${floorYpx} and y=${Math.round(canvasH * 0.90)}
+FLOOR LINE: y≈${floorYpx}px — this is where the back wall meets the floor.
+Items higher in canvas (smaller y) are farther from camera. Items lower (larger y) are closer.
 
-NEW ITEM: "${productName}" (${category}), real size: ${widthCm}cm wide × ${heightCm}cm tall
+NEW ITEM TO PLACE: "${productName}" (${category}), real dimensions: ${widthCm}cm wide × ${heightCm}cm tall
 
-Step 1 — Estimate the room's real width from the photo perspective (typical room: 300–500 cm).
-Step 2 — Compute rendered_width = (${widthCm} / estimatedRoomWidthCm) × ${canvasW}
-Step 3 — Choose a placement depth (y position for the item's feet on the floor).
-Step 4 — scale = rendered_width / (${canvasW} × perspScale(footY))
-
-ALREADY ON CANVAS (maintain ≥ 50px gap):
+ALREADY ON CANVAS — avoid overlapping these (each entry: name, center x, center y, approx pixel width):
 ${existingStr}
 
+YOUR TASK: Choose the best (cx, cy) position for the new item.
+cx = horizontal center in pixels (0–${canvasW})
+cy = vertical center in pixels (0–${canvasH})
+
 PLACEMENT RULES:
-- ${isCeiling ? `Ceiling pendant: cy = 40–100 (hanging from ceiling, centered horizontally)` :
-    isTableLamp ? `Table lamp: cy = 200–330 (sitting on surface, near wall or cabinet)` :
-    `Floor item: feet touch floor, so cy = footY − (rendered_height/2); footY between ${floorYpx} and ${Math.round(canvasH * 0.88)}`}
-- Sofas/cabinets: near back wall (footY close to ${floorYpx})
-- Tables/chairs: open floor area (footY ${Math.round(floorYpx * 1.05)}–${Math.round(canvasH * 0.82)})
-- Lamps: corners (cx near 50–120 or ${canvasW - 120}–${canvasW - 50})
-- Do NOT overlap existing items bounding boxes above
+${isCeiling
+  ? `- This is a CEILING lamp. It hangs from the ceiling, so cy must be between 30 and 120.
+- Place it above the seating area (roughly center-horizontal unless one is already there).`
+  : isTableLamp
+  ? `- This is a TABLE lamp. It sits on a surface. cy should be between 180 and 320.
+- Place near a wall, corner, or next to seating.`
+  : `- This is a FLOOR item. Its feet sit on the floor.
+- For items NEAR the back wall (sofa, cabinet, bookcase): cy ≈ ${Math.round(floorYpx * 0.85)}–${floorYpx}
+- For items in the MID-FLOOR area (table, chair, stool, rug): cy ≈ ${floorYpx}–${Math.round(canvasH * 0.80)}
+- For items in the FOREGROUND (closer to camera): cy ≈ ${Math.round(canvasH * 0.78)}–${Math.round(canvasH * 0.88)}`}
+- Sofas/cabinets/bookshelves: place against the back wall or side walls
+- Lamps (floor): place in corners or beside seating (cx near 60–160 or ${canvasW - 160}–${canvasW - 60})
+- Tables: open floor area, not behind other items
+- Do NOT place on top of existing items. Keep at least 60px gap from each existing item's center.
 - cx must be between 60 and ${canvasW - 60}
 
-Return ONLY valid JSON (no markdown, no explanation):
-{"cx":450,"cy":390,"scale":0.22,"estimatedRoomWidthCm":380,"reason":"one short sentence"}`;
+Return ONLY valid JSON, no markdown:
+{"cx":450,"cy":390,"reason":"one short sentence explaining placement"}`;
 
     try {
       const { data, mimeType } = await toBase64(roomImageUrl);
@@ -355,11 +453,10 @@ Return ONLY valid JSON (no markdown, no explanation):
       const clean = raw.replace(/```json|```/g, '').trim();
       const json  = JSON.parse(clean);
 
-      const cx    = typeof json.cx    === 'number' ? clamp(Math.round(json.cx),    60, canvasW - 60) : DEFAULT.cx;
-      const cy    = typeof json.cy    === 'number' ? clamp(Math.round(json.cy),    20, canvasH - 20) : DEFAULT.cy;
-      const scale = typeof json.scale === 'number' ? clamp(json.scale, 0.04, 0.80) : DEFAULT.scale;
+      const cx = typeof json.cx === 'number' ? clamp(Math.round(json.cx), 60, canvasW - 60) : DEFAULT.cx;
+      const cy = typeof json.cy === 'number' ? clamp(Math.round(json.cy), 20, canvasH - 20) : DEFAULT.cy;
 
-      return { cx, cy, scale, reason: typeof json.reason === 'string' ? json.reason : '' };
+      return { cx, cy, scale: DEFAULT.scale, reason: typeof json.reason === 'string' ? json.reason : '' };
     } catch (err: any) {
       this.logger.warn(`placeItem AI failed: ${err?.message} — using default`);
       return DEFAULT;

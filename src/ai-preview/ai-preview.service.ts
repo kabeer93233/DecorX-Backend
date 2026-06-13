@@ -12,6 +12,7 @@ import { AnalyzeRoomDto } from './dto/analyze-room.dto';
 import { SuggestPlacement2dDto } from './dto/suggest-placement-2d.dto';
 import { SaveAiDesignDto } from './dto/save-ai-design.dto';
 import { PlaceItemDto } from './dto/place-item.dto';
+import { RedesignRoomDto } from './dto/redesign-room.dto';
 
 // 2D canvas placement rules — multiple positions per category to avoid stacking
 const PLACEMENT_RULES: Record<string, Array<{ xPct: number; yPct: number; scale: number; reason: string }>> = {
@@ -135,6 +136,15 @@ export class AiPreviewService {
   async analyzeRoom(dto: AnalyzeRoomDto) {
     const analysis = await this.gemini.analyzeRoom(dto.roomImageUrl);
     return { success: true, data: analysis };
+  }
+
+  async redesignRoom(dto: RedesignRoomDto) {
+    const result = await this.gemini.redesignRoom(
+      dto.roomImageUrl,
+      dto.floorLineY,
+      dto.items,
+    );
+    return { success: true, data: result };
   }
 
   async placeItem(dto: PlaceItemDto) {
