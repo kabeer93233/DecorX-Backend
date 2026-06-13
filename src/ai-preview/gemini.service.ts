@@ -1,9 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 
-export interface ProductRecommendation {
-  suggestedCategories: string[];
-  reason: string;
+export interface RoomGeometry {
+  floorLineY: number;
+  vanishingPoint: { x: number; y: number };
+  placementZones: Record<string, { x: number; y: number }>;
 }
 
 export interface RoomAnalysis {
@@ -17,7 +18,39 @@ export interface RoomAnalysis {
   reason: string;
   wallHexColor: string;
   floorHexColor: string;
+  geometry: RoomGeometry;
 }
+
+export interface ProductRecommendation {
+  suggestedCategories: string[];
+  reason: string;
+}
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const GROQ_ENDPOINT        = 'https://api.groq.com/openai/v1/chat/completions';
+const OPENROUTER_ENDPOINT  = 'https://openrouter.ai/api/v1/chat/completions';
+const GROQ_VISION_MODEL    = 'meta-llama/llama-4-scout-17b-16e-instruct';
+const OPENROUTER_MODEL     = 'google/gemini-2.0-flash-exp:free';
+const GROQ_TEXT_MODEL      = 'llama3-8b-8192';
+
+const VALID_CATEGORIES = ['sofa', 'chair', 'table', 'lamp', 'stool', 'decoration', 'cabinet', 'bed', 'rug'];
+
+const DEFAULT_GEOMETRY: RoomGeometry = {
+  floorLineY: 0.63,
+  vanishingPoint: { x: 0.50, y: 0.38 },
+  placementZones: {
+    sofa:    { x: 0.24, y: 0.72 },
+    chair:   { x: 0.72, y: 0.70 },
+    table:   { x: 0.44, y: 0.68 },
+    lamp:    { x: 0.82, y: 0.65 },
+    cabinet: { x: 0.07, y: 0.65 },
+    bed:     { x: 0.40, y: 0.74 },
+    stool:   { x: 0.55, y: 0.70 },
+    rug:     { x: 0.42, y: 0.78 },
+    decoration: { x: 0.68, y: 0.65 },
+  },
+};
 
 const FALLBACK_ANALYSIS: RoomAnalysis = {
   roomType: 'living room',
@@ -30,45 +63,198 @@ const FALLBACK_ANALYSIS: RoomAnalysis = {
   reason: 'Could not analyze room automatically. Showing default suggestions.',
   wallHexColor: '#EDE3D5',
   floorHexColor: '#C4A478',
+  geometry: DEFAULT_GEOMETRY,
 };
 
-const VALID_CATEGORIES = ['sofa', 'chair', 'table', 'stool', 'decoration', 'cabinet'];
-
-const FALLBACKS: Record<string, ProductRecommendation> = {
-  living_room: {
-    suggestedCategories: ['sofa', 'table', 'decoration'],
-    reason: 'A living room works best with a sofa, coffee table, and decorative accents.',
-  },
-  bedroom: {
-    suggestedCategories: ['table', 'cabinet', 'decoration'],
-    reason: 'A bedroom needs bedside tables, a wardrobe, and soft decorative touches.',
-  },
-  dining_room: {
-    suggestedCategories: ['table', 'chair', 'cabinet'],
-    reason: 'A dining room centers around a dining table, chairs, and a sideboard cabinet.',
-  },
+const FALLBACK_RECOMMENDATIONS: Record<string, ProductRecommendation> = {
+  living_room: { suggestedCategories: ['sofa', 'table', 'lamp'],    reason: 'A living room works best with a sofa, coffee table, and a lamp.' },
+  bedroom:     { suggestedCategories: ['bed', 'cabinet', 'lamp'],   reason: 'A bedroom needs a bed, wardrobe, and bedside lamp.' },
+  dining_room: { suggestedCategories: ['table', 'chair', 'cabinet'],reason: 'A dining room centres around a table, chairs, and a sideboard.' },
+  office:      { suggestedCategories: ['table', 'chair', 'lamp'],   reason: 'An office needs a desk, ergonomic chair, and good lighting.' },
 };
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function clamp(v: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, v));
+}
+
+function isNum(v: unknown): v is number {
+  return typeof v === 'number' && !isNaN(v);
+}
+
+async function toBase64(url: string): Promise<{ data: string; mimeType: string }> {
+  const res = await axios.get(url, { responseType: 'arraybuffer', timeout: 8000 });
+  const mime = (res.headers['content-type'] as string) || 'image/jpeg';
+  return { data: Buffer.from(res.data).toString('base64'), mimeType: mime };
+}
+
+function parseGeometry(raw: any, fallbackFloorY = 0.63): RoomGeometry {
+  const floorLineY = isNum(raw?.floorLineY) ? clamp(raw.floorLineY, 0.42, 0.85) : fallbackFloorY;
+  const vpX        = isNum(raw?.vanishingPoint?.x) ? clamp(raw.vanishingPoint.x, 0.15, 0.85) : 0.50;
+  const vpY        = isNum(raw?.vanishingPoint?.y) ? clamp(raw.vanishingPoint.y, 0.18, 0.58) : 0.38;
+
+  const rawZones = raw?.placementZones ?? {};
+  const zones: Record<string, { x: number; y: number }> = {};
+
+  for (const [key, def] of Object.entries(DEFAULT_GEOMETRY.placementZones)) {
+    const rz = rawZones[key];
+    zones[key] = {
+      x: isNum(rz?.x) ? clamp(rz.x, 0.04, 0.94) : def.x,
+      y: isNum(rz?.y) ? clamp(rz.y, floorLineY, 0.92) : def.y,
+    };
+  }
+
+  return { floorLineY, vanishingPoint: { x: vpX, y: vpY }, placementZones: zones };
+}
+
+// ── Shared vision call (Groq primary → OpenRouter fallback) ───────────────────
+
+async function callVisionAI(
+  base64: string,
+  mimeType: string,
+  prompt: string,
+  groqKey: string,
+  openrouterKey: string,
+  logger: Logger,
+  maxTokens = 900,
+): Promise<string> {
+  const imageUrl = `data:${mimeType};base64,${base64}`;
+
+  const body = (model: string) => ({
+    model,
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'image_url', image_url: { url: imageUrl } },
+        { type: 'text', text: prompt },
+      ],
+    }],
+    temperature: 0.1,
+    max_tokens: maxTokens,
+  });
+
+  // Primary: Groq
+  try {
+    const res = await axios.post(GROQ_ENDPOINT, body(GROQ_VISION_MODEL), {
+      headers: { Authorization: `Bearer ${groqKey}`, 'Content-Type': 'application/json' },
+      timeout: 25000,
+    });
+    return res.data?.choices?.[0]?.message?.content ?? '';
+  } catch (err: any) {
+    logger.warn(`Groq vision failed: ${err?.message} — trying OpenRouter`);
+  }
+
+  // Fallback: OpenRouter
+  const res = await axios.post(OPENROUTER_ENDPOINT, body(OPENROUTER_MODEL), {
+    headers: {
+      Authorization: `Bearer ${openrouterKey}`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': 'https://decorx.vercel.app',
+    },
+    timeout: 30000,
+  });
+  return res.data?.choices?.[0]?.message?.content ?? '';
+}
+
+// ── Service ───────────────────────────────────────────────────────────────────
 
 @Injectable()
 export class GeminiService {
   private readonly logger = new Logger(GeminiService.name);
-  private readonly apiKey = process.env.GEMINI_API_KEY;
-  private readonly endpoint =
-    'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
+  private readonly groqKey        = process.env.GROQ_API_KEY ?? '';
+  private readonly openrouterKey  = process.env.OPENROUTER_API_KEY ?? '';
 
-  async recommendProducts(
-    roomType: string,
-    alreadyPlaced: string[],
-  ): Promise<ProductRecommendation> {
-    if (!this.apiKey) {
-      this.logger.warn('GEMINI_API_KEY not set, using fallback');
-      return FALLBACKS[roomType] ?? FALLBACKS['living_room'];
+  // ── Room analysis with spatial geometry ──────────────────────────────────────
+
+  async analyzeRoom(imageUrl: string): Promise<RoomAnalysis> {
+    if (!this.groqKey && !this.openrouterKey) {
+      this.logger.warn('No AI keys configured — returning fallback');
+      return FALLBACK_ANALYSIS;
     }
 
-    const alreadyStr =
-      alreadyPlaced.length > 0
-        ? `Already placed: ${alreadyPlaced.join(', ')}.`
-        : 'Nothing placed yet.';
+    try {
+      const { data, mimeType } = await toBase64(imageUrl);
+
+      const prompt =
+        `You are an expert interior designer and computer vision AI. Analyze this room photo carefully.
+Return ONLY a single valid JSON object — no markdown, no explanation, no extra text.
+
+JSON schema (fill every field):
+{
+  "roomType": "living room",
+  "style": "modern",
+  "dominantColors": ["#hex1","#hex2","#hex3"],
+  "existingFurniture": ["sofa","window"],
+  "lightingCondition": "natural",
+  "floorType": "hardwood",
+  "suggestedCategories": ["lamp","table"],
+  "reason": "One sentence why.",
+  "wallHexColor": "#EDE3D5",
+  "floorHexColor": "#C4A478",
+  "geometry": {
+    "floorLineY": 0.63,
+    "vanishingPoint": { "x": 0.50, "y": 0.38 },
+    "placementZones": {
+      "sofa":       { "x": 0.24, "y": 0.72 },
+      "chair":      { "x": 0.72, "y": 0.70 },
+      "table":      { "x": 0.44, "y": 0.68 },
+      "lamp":       { "x": 0.82, "y": 0.65 },
+      "cabinet":    { "x": 0.07, "y": 0.65 },
+      "bed":        { "x": 0.40, "y": 0.74 },
+      "stool":      { "x": 0.55, "y": 0.70 },
+      "rug":        { "x": 0.42, "y": 0.78 },
+      "decoration": { "x": 0.68, "y": 0.65 }
+    }
+  }
+}
+
+Field rules:
+- roomType: one of: living room, bedroom, dining room, office, studio
+- style: one of: modern, minimalist, traditional, industrial, bohemian, scandinavian, classic
+- suggestedCategories: up to 3 from: ${VALID_CATEGORIES.join(', ')}
+- wallHexColor / floorHexColor: exact hex color matching what you see in the photo
+- geometry.floorLineY: fraction (0–1) of image height where the floor meets the back wall (horizon of the floor)
+- geometry.vanishingPoint: perspective vanishing point as fractions of image width (x) and height (y)
+- geometry.placementZones: for EACH category, the ideal center position (x,y as fractions 0–1) to place that furniture type so it looks naturally in the room. y = where the item's base (feet) would touch the floor at that depth. Consider walls, corners, windows, and existing furniture — place items where they realistically belong. sofa/cabinet near back wall (lower y), items in front (higher y). Lamps near corners.`;
+
+      const raw = await callVisionAI(data, mimeType, prompt, this.groqKey, this.openrouterKey, this.logger);
+      const cleaned = raw.replace(/```json|```/g, '').trim();
+      const parsed = JSON.parse(cleaned);
+
+      const suggestedCategories = (Array.isArray(parsed.suggestedCategories) ? parsed.suggestedCategories : [])
+        .filter((c: string) => VALID_CATEGORIES.includes(c.toLowerCase()))
+        .slice(0, 3);
+
+      return {
+        roomType:          typeof parsed.roomType === 'string'           ? parsed.roomType          : FALLBACK_ANALYSIS.roomType,
+        style:             typeof parsed.style === 'string'              ? parsed.style             : FALLBACK_ANALYSIS.style,
+        dominantColors:    Array.isArray(parsed.dominantColors)          ? parsed.dominantColors.slice(0, 4) : FALLBACK_ANALYSIS.dominantColors,
+        existingFurniture: Array.isArray(parsed.existingFurniture)       ? parsed.existingFurniture : [],
+        lightingCondition: typeof parsed.lightingCondition === 'string'  ? parsed.lightingCondition : FALLBACK_ANALYSIS.lightingCondition,
+        floorType:         typeof parsed.floorType === 'string'          ? parsed.floorType         : FALLBACK_ANALYSIS.floorType,
+        suggestedCategories: suggestedCategories.length ? suggestedCategories : FALLBACK_ANALYSIS.suggestedCategories,
+        reason:            typeof parsed.reason === 'string'             ? parsed.reason            : FALLBACK_ANALYSIS.reason,
+        wallHexColor:      typeof parsed.wallHexColor === 'string'       ? parsed.wallHexColor      : FALLBACK_ANALYSIS.wallHexColor,
+        floorHexColor:     typeof parsed.floorHexColor === 'string'      ? parsed.floorHexColor     : FALLBACK_ANALYSIS.floorHexColor,
+        geometry:          parseGeometry(parsed.geometry, isNum(parsed.geometry?.floorLineY) ? parsed.geometry.floorLineY : 0.63),
+      };
+    } catch (err: any) {
+      this.logger.error(`analyzeRoom failed: ${err?.message}`);
+      return FALLBACK_ANALYSIS;
+    }
+  }
+
+  // ── Text-only product recommendation (no vision needed) ──────────────────────
+
+  async recommendProducts(roomType: string, alreadyPlaced: string[]): Promise<ProductRecommendation> {
+    if (!this.groqKey) {
+      return FALLBACK_RECOMMENDATIONS[roomType] ?? FALLBACK_RECOMMENDATIONS['living_room'];
+    }
+
+    const alreadyStr = alreadyPlaced.length
+      ? `Already placed: ${alreadyPlaced.join(', ')}.`
+      : 'Nothing placed yet.';
 
     const prompt =
       `You are an interior designer. Room type: ${roomType.replace('_', ' ')}. ${alreadyStr}\n` +
@@ -78,153 +264,129 @@ export class GeminiService {
       `{"suggestedCategories":["sofa","table"],"reason":"One sentence explanation."}`;
 
     try {
-      const response = await axios.post(
-        `${this.endpoint}?key=${this.apiKey}`,
-        {
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.3, maxOutputTokens: 200 },
-        },
-        { timeout: 7000 },
-      );
+      const res = await axios.post(GROQ_ENDPOINT, {
+        model: GROQ_TEXT_MODEL,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.3,
+        max_tokens: 200,
+      }, {
+        headers: { Authorization: `Bearer ${this.groqKey}`, 'Content-Type': 'application/json' },
+        timeout: 10000,
+      });
 
-      const text = response.data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-      const cleaned = text.replace(/```json|```/g, '').trim();
-      const parsed = JSON.parse(cleaned);
-
-      const categories = (parsed.suggestedCategories as string[])
-        .filter((c) => VALID_CATEGORIES.includes(c.toLowerCase()))
+      const text    = res.data?.choices?.[0]?.message?.content ?? '';
+      const parsed  = JSON.parse(text.replace(/```json|```/g, '').trim());
+      const cats    = (parsed.suggestedCategories as string[])
+        .filter(c => VALID_CATEGORIES.includes(c.toLowerCase()))
         .slice(0, 3);
 
       return {
-        suggestedCategories: categories.length > 0 ? categories : (FALLBACKS[roomType]?.suggestedCategories ?? []),
+        suggestedCategories: cats.length ? cats : (FALLBACK_RECOMMENDATIONS[roomType]?.suggestedCategories ?? []),
         reason: typeof parsed.reason === 'string' ? parsed.reason : '',
       };
     } catch (err: any) {
-      this.logger.warn('Gemini failed, using fallback: ' + err?.message);
-      return FALLBACKS[roomType] ?? FALLBACKS['living_room'];
+      this.logger.warn(`recommendProducts failed: ${err?.message}`);
+      return FALLBACK_RECOMMENDATIONS[roomType] ?? FALLBACK_RECOMMENDATIONS['living_room'];
     }
   }
 
-  async getProductBoundingBox(imageUrl: string): Promise<{ x1: number; y1: number; x2: number; y2: number } | null> {
-    if (!this.apiKey) return null;
-    try {
-      const imageResponse = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 5000 });
-      const imageBase64 = Buffer.from(imageResponse.data).toString('base64');
-      const mimeType = (imageResponse.headers['content-type'] as string) || 'image/jpeg';
+  // ── AI-driven per-item placement ─────────────────────────────────────────────
 
-      const prompt =
-        `Find the main furniture/product in this image and return ONLY valid JSON with no markdown:\n` +
-        `{"x1":0.1,"y1":0.05,"x2":0.9,"y2":0.95}\n` +
-        `x1,y1 = top-left corner as fraction (0-1) of image width/height.\n` +
-        `x2,y2 = bottom-right corner as fraction (0-1).\n` +
-        `Exclude white/blank background. Tight crop around the product only.\n` +
-        `If no product found: {"x1":0.02,"y1":0.02,"x2":0.98,"y2":0.98}`;
-
-      const response = await axios.post(
-        `${this.endpoint}?key=${this.apiKey}`,
-        { contents: [{ parts: [{ inlineData: { mimeType, data: imageBase64 } }, { text: prompt }] }],
-          generationConfig: { temperature: 0.0, maxOutputTokens: 100 } },
-        { timeout: 7000 },
-      );
-      const text = response.data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-      const parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
-      const clamp = (v: number) => Math.max(0, Math.min(1, v));
-      return { x1: clamp(parsed.x1), y1: clamp(parsed.y1), x2: clamp(parsed.x2), y2: clamp(parsed.y2) };
-    } catch {
-      return null;
-    }
-  }
-
-  async suggestFurniturePlacement2d(
-    productCategory: string,
+  async placeItem(
     roomImageUrl: string,
-  ): Promise<{ xPct: number; yPct: number; scale: number; rotation: number; reason: string } | null> {
-    if (!this.apiKey) return null;
+    productName: string,
+    category: string,
+    widthCm: number,
+    heightCm: number,
+    floorLineY: number,
+    existingItems: Array<{ cx: number; cy: number; scale: number; category: string; productName: string }>,
+    canvasW = 900,
+    canvasH = 600,
+  ): Promise<{ cx: number; cy: number; scale: number; reason: string }> {
+    const DEFAULT = this.defaultPlacement(category, existingItems.length, floorLineY, widthCm, canvasW, canvasH);
+
+    if (!this.groqKey && !this.openrouterKey) return DEFAULT;
+
+    const floorYpx    = Math.round(floorLineY * canvasH);
+    const isCeiling   = /pendant|chandelier/i.test(productName + category);
+    const isTableLamp = /table lamp|desk lamp|marble base|swing-arm|vintage edison|cone shade|geometric metal/i.test(productName);
+
+    const existingStr = existingItems.length
+      ? existingItems.map(i => {
+          const ps = 0.55 + (i.cy / canvasH) * 0.70;
+          const fw = Math.round(canvasW * i.scale * ps);
+          return `  - "${i.productName}" (${i.category}): center (${i.cx}, ${i.cy}), ~${fw}px wide`;
+        }).join('\n')
+      : '  none';
+
+    const prompt = `You are an interior design AI. Look at the room photo carefully.
+
+CANVAS: ${canvasW}×${canvasH}px
+PERSPECTIVE: perspScale(y) = 0.55 + (y/${canvasH})×0.70  →  items lower in canvas appear larger/closer
+FLOOR LINE: y≈${floorYpx}px (fraction ${floorLineY.toFixed(2)})
+FLOOR AREA: feet of floor items sit between y=${floorYpx} and y=${Math.round(canvasH * 0.90)}
+
+NEW ITEM: "${productName}" (${category}), real size: ${widthCm}cm wide × ${heightCm}cm tall
+
+Step 1 — Estimate the room's real width from the photo perspective (typical room: 300–500 cm).
+Step 2 — Compute rendered_width = (${widthCm} / estimatedRoomWidthCm) × ${canvasW}
+Step 3 — Choose a placement depth (y position for the item's feet on the floor).
+Step 4 — scale = rendered_width / (${canvasW} × perspScale(footY))
+
+ALREADY ON CANVAS (maintain ≥ 50px gap):
+${existingStr}
+
+PLACEMENT RULES:
+- ${isCeiling ? `Ceiling pendant: cy = 40–100 (hanging from ceiling, centered horizontally)` :
+    isTableLamp ? `Table lamp: cy = 200–330 (sitting on surface, near wall or cabinet)` :
+    `Floor item: feet touch floor, so cy = footY − (rendered_height/2); footY between ${floorYpx} and ${Math.round(canvasH * 0.88)}`}
+- Sofas/cabinets: near back wall (footY close to ${floorYpx})
+- Tables/chairs: open floor area (footY ${Math.round(floorYpx * 1.05)}–${Math.round(canvasH * 0.82)})
+- Lamps: corners (cx near 50–120 or ${canvasW - 120}–${canvasW - 50})
+- Do NOT overlap existing items bounding boxes above
+- cx must be between 60 and ${canvasW - 60}
+
+Return ONLY valid JSON (no markdown, no explanation):
+{"cx":450,"cy":390,"scale":0.22,"estimatedRoomWidthCm":380,"reason":"one short sentence"}`;
+
     try {
-      const imageResponse = await axios.get(roomImageUrl, { responseType: 'arraybuffer', timeout: 5000 });
-      const imageBase64 = Buffer.from(imageResponse.data).toString('base64');
-      const mimeType = (imageResponse.headers['content-type'] as string) || 'image/jpeg';
+      const { data, mimeType } = await toBase64(roomImageUrl);
+      const raw   = await callVisionAI(data, mimeType, prompt, this.groqKey, this.openrouterKey, this.logger, 400);
+      const clean = raw.replace(/```json|```/g, '').trim();
+      const json  = JSON.parse(clean);
 
-      const prompt =
-        `You are an interior designer. Look at this room photo and suggest the best position to place a ${productCategory}.\n` +
-        `Return ONLY valid JSON with no markdown:\n` +
-        `{"xPct":0.3,"yPct":0.65,"scale":0.55,"rotation":0,"reason":"One sentence."}\n` +
-        `xPct,yPct = center position as fraction (0-1) of canvas width/height.\n` +
-        `yPct must be 0.45-0.82 (floor area, not ceiling). xPct must be 0.05-0.95.\n` +
-        `scale = 0.2-0.8 (relative size fitting the room perspective).\n` +
-        `rotation = 0 for most items.\n` +
-        `Place the ${productCategory} in the most realistic and aesthetically pleasing spot.`;
+      const cx    = typeof json.cx    === 'number' ? clamp(Math.round(json.cx),    60, canvasW - 60) : DEFAULT.cx;
+      const cy    = typeof json.cy    === 'number' ? clamp(Math.round(json.cy),    20, canvasH - 20) : DEFAULT.cy;
+      const scale = typeof json.scale === 'number' ? clamp(json.scale, 0.04, 0.80) : DEFAULT.scale;
 
-      const response = await axios.post(
-        `${this.endpoint}?key=${this.apiKey}`,
-        { contents: [{ parts: [{ inlineData: { mimeType, data: imageBase64 } }, { text: prompt }] }],
-          generationConfig: { temperature: 0.2, maxOutputTokens: 150 } },
-        { timeout: 8000 },
-      );
-      const text = response.data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-      const parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
-      return {
-        xPct:   Math.max(0.05, Math.min(0.95, parsed.xPct ?? 0.35)),
-        yPct:   Math.max(0.45, Math.min(0.82, parsed.yPct ?? 0.60)),
-        scale:  Math.max(0.15, Math.min(0.85, parsed.scale ?? 0.50)),
-        rotation: parsed.rotation ?? 0,
-        reason: parsed.reason ?? `${productCategory} placed in an optimal position.`,
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  async analyzeRoom(imageUrl: string): Promise<RoomAnalysis> {
-    if (!this.apiKey) {
-      this.logger.warn('GEMINI_API_KEY not set, returning fallback room analysis');
-      return FALLBACK_ANALYSIS;
-    }
-    try {
-      const imageResponse = await axios.get(imageUrl, {
-        responseType: 'arraybuffer',
-        timeout: 5000,
-      });
-      const imageBase64 = Buffer.from(imageResponse.data).toString('base64');
-      const mimeType = (imageResponse.headers['content-type'] as string) || 'image/jpeg';
-
-      const prompt =
-        `Analyze this room photo and return ONLY valid JSON with no markdown, no explanation:\n` +
-        `{"roomType":"living room","style":"modern","dominantColors":["#f5f0eb","#3d3d3d"],"existingFurniture":["sofa"],"lightingCondition":"natural","floorType":"hardwood","suggestedCategories":["lamp","rug"],"reason":"Brief reason.","wallHexColor":"#EDE3D5","floorHexColor":"#C4A478"}\n` +
-        `roomType: one of: living room, bedroom, dining room, office, studio\n` +
-        `style: one of: modern, minimalist, traditional, industrial, bohemian, scandinavian, classic\n` +
-        `suggestedCategories: up to 3 from: sofa, chair, table, lamp, cabinet, stool, decoration\n` +
-        `wallHexColor: a hex color code matching the wall color visible in the photo (e.g. "#EDE3D5")\n` +
-        `floorHexColor: a hex color code matching the floor color visible in the photo (e.g. "#C4A478")`;
-
-      const response = await axios.post(
-        `${this.endpoint}?key=${this.apiKey}`,
-        {
-          contents: [{ parts: [{ inlineData: { mimeType, data: imageBase64 } }, { text: prompt }] }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: 400 },
-        },
-        { timeout: 8000 },
-      );
-
-      const text = response.data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-      const cleaned = text.replace(/```json|```/g, '').trim();
-      const parsed = JSON.parse(cleaned);
-
-      return {
-        roomType: parsed.roomType ?? FALLBACK_ANALYSIS.roomType,
-        style: parsed.style ?? FALLBACK_ANALYSIS.style,
-        dominantColors: Array.isArray(parsed.dominantColors) ? parsed.dominantColors.slice(0, 4) : FALLBACK_ANALYSIS.dominantColors,
-        existingFurniture: Array.isArray(parsed.existingFurniture) ? parsed.existingFurniture : [],
-        lightingCondition: parsed.lightingCondition ?? FALLBACK_ANALYSIS.lightingCondition,
-        floorType: parsed.floorType ?? FALLBACK_ANALYSIS.floorType,
-        suggestedCategories: Array.isArray(parsed.suggestedCategories) ? parsed.suggestedCategories.slice(0, 3) : FALLBACK_ANALYSIS.suggestedCategories,
-        reason: parsed.reason ?? FALLBACK_ANALYSIS.reason,
-        wallHexColor: typeof parsed.wallHexColor === 'string' ? parsed.wallHexColor : FALLBACK_ANALYSIS.wallHexColor,
-        floorHexColor: typeof parsed.floorHexColor === 'string' ? parsed.floorHexColor : FALLBACK_ANALYSIS.floorHexColor,
-      };
+      return { cx, cy, scale, reason: typeof json.reason === 'string' ? json.reason : '' };
     } catch (err: any) {
-      this.logger.error('analyzeRoom failed: ' + err?.message);
-      return FALLBACK_ANALYSIS;
+      this.logger.warn(`placeItem AI failed: ${err?.message} — using default`);
+      return DEFAULT;
     }
   }
+
+  private defaultPlacement(
+    category: string,
+    count: number,
+    floorLineY: number,
+    widthCm: number,
+    canvasW: number,
+    canvasH: number,
+  ): { cx: number; cy: number; scale: number; reason: string } {
+    const floorY  = floorLineY * canvasH;
+    const ps      = 0.55 + (floorY / canvasH) * 0.70;
+    const ROOM_W  = 420;
+    const fw      = Math.min((widthCm / ROOM_W) * canvasW / ps, 260);
+    const scale   = fw / (canvasW * ps);
+    const fh      = fw * 1.0; // approximate aspect 1:1
+    const cy      = Math.round(floorY - fh / 2);
+    const xSlots  = [0.30, 0.55, 0.20, 0.70, 0.42, 0.65];
+    const cx      = Math.round(xSlots[count % xSlots.length] * canvasW);
+    return { cx, cy: Math.max(20, cy), scale: Math.max(0.05, scale), reason: 'Fallback placement' };
+  }
+
+  // Kept for backward compatibility — unused
+  async getProductBoundingBox(_imageUrl: string) { return null; }
+  async suggestFurniturePlacement2d(_category: string, _roomImageUrl: string) { return null; }
 }

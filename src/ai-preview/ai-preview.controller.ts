@@ -8,6 +8,7 @@ import { SaveDesignDto } from './dto/save-design.dto';
 import { AnalyzeRoomDto } from './dto/analyze-room.dto';
 import { SuggestPlacement2dDto } from './dto/suggest-placement-2d.dto';
 import { SaveAiDesignDto } from './dto/save-ai-design.dto';
+import { PlaceItemDto } from './dto/place-item.dto';
 
 @Controller('ai-preview')
 @UseGuards(AuthGuard, EmailVerifiedGuard)
@@ -51,6 +52,11 @@ export class AiPreviewController {
   @Post('analyze-room')
   analyzeRoom(@Body() dto: AnalyzeRoomDto) {
     return this.service.analyzeRoom(dto);
+  }
+
+  @Post('place-item')
+  placeItem(@Body() dto: PlaceItemDto) {
+    return this.service.placeItem(dto);
   }
 
   @Post('suggest-placement-2d')

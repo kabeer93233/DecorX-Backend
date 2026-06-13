@@ -11,6 +11,7 @@ import { SaveDesignDto } from './dto/save-design.dto';
 import { AnalyzeRoomDto } from './dto/analyze-room.dto';
 import { SuggestPlacement2dDto } from './dto/suggest-placement-2d.dto';
 import { SaveAiDesignDto } from './dto/save-ai-design.dto';
+import { PlaceItemDto } from './dto/place-item.dto';
 
 // 2D canvas placement rules — multiple positions per category to avoid stacking
 const PLACEMENT_RULES: Record<string, Array<{ xPct: number; yPct: number; scale: number; reason: string }>> = {
@@ -136,39 +137,30 @@ export class AiPreviewService {
     return { success: true, data: analysis };
   }
 
-  async suggestPlacement2d(dto: SuggestPlacement2dDto) {
-    // Try Gemini vision placement when room image is provided
-    if (dto.roomImageUrl) {
-      const geminiResult = await this.gemini.suggestFurniturePlacement2d(
-        dto.productCategory,
-        dto.roomImageUrl,
-      );
-      if (geminiResult) {
-        return {
-          success: true,
-          data: {
-            x: Math.round(geminiResult.xPct * dto.canvasWidth),
-            y: Math.round(geminiResult.yPct * dto.canvasHeight),
-            scale: geminiResult.scale,
-            rotation: geminiResult.rotation,
-            reason: `AI placement: ${geminiResult.reason}`,
-          },
-        };
-      }
-    }
+  async placeItem(dto: PlaceItemDto) {
+    const result = await this.gemini.placeItem(
+      dto.roomImageUrl,
+      dto.productName,
+      dto.productCategory,
+      dto.productWidthCm,
+      dto.productHeightCm,
+      dto.floorLineY,
+      dto.existingItems ?? [],
+    );
+    return { success: true, data: result };
+  }
 
-    // Fallback: rule-based with rotation through positions
-    const key = dto.productCategory.toLowerCase();
+  async suggestPlacement2d(dto: SuggestPlacement2dDto) {
+    // Rule-based fallback — placement is now driven client-side via AI geometry zones
+    const key   = dto.productCategory.toLowerCase();
     const rules = PLACEMENT_RULES[key] ?? [{ xPct: 0.35, yPct: 0.60, scale: 0.48, reason: 'Balanced central placement.' }];
-    // cycle through positions so adding same category twice doesn't stack
-    const idx = 0;
-    const rule = rules[idx];
+    const rule  = rules[0];
     return {
       success: true,
       data: {
-        x: Math.round(rule.xPct * dto.canvasWidth),
-        y: Math.round(rule.yPct * dto.canvasHeight),
-        scale: rule.scale,
+        x:      Math.round(rule.xPct * dto.canvasWidth),
+        y:      Math.round(rule.yPct * dto.canvasHeight),
+        scale:  rule.scale,
         rotation: 0,
         reason: rule.reason,
       },
