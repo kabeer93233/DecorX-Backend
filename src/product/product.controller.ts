@@ -39,7 +39,6 @@ export class ProductController {
     }
 
     //Get one by ID
-    @UseGuards(AuthGuard)
     @Get(':id')
     async getByID(@Param('id', ParseIntPipe) id : number) : Promise<Product>{
         return this.productService.getById(id);
