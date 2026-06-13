@@ -1,5 +1,6 @@
 import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Put, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ProductService } from './product.service';
+import { Express } from 'express';
 import { CreateProductDTO } from './product dto/product.dto';
 import { Product } from './products.entity';
 import { AuthGuard } from '../auth/guards/auth/auth.guard';
