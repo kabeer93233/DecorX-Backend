@@ -4,15 +4,15 @@ import { ValidationPipe } from '@nestjs/common';
 import cookieParser from 'cookie-parser';
 
 async function bootstrap() {
-
   const app = await NestFactory.create(AppModule);
 
   app.use(cookieParser());
 
   app.enableCors({
-    origin: 'https://decor-x-front-end.vercel.app',
+    origin: ['https://decor-x-front-end.vercel.app'],
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
   });
 
   app.useGlobalPipes(
@@ -22,7 +22,7 @@ async function bootstrap() {
     }),
   );
 
-  await app.listen(process.env.PORT ?? 3000);
+  await app.listen(process.env.PORT || 3000);
 }
 
 bootstrap();
