@@ -11,7 +11,11 @@ async function bootstrap() {
   app.use(cookieParser());
 
   app.enableCors({
-    origin: 'https://decor-x-front-end.vercel.app',
+    origin: [
+      'https://decor-x-front-end.vercel.app',
+      'http://localhost:5173',
+      'http://localhost:4173',
+    ],
     credentials: true,
   });
 
