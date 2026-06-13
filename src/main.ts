@@ -4,15 +4,15 @@ import { ValidationPipe } from '@nestjs/common';
 import cookieParser from 'cookie-parser';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, {
+    cors: false,
+  });
 
   app.use(cookieParser());
 
   app.enableCors({
-    origin: ['https://decor-x-front-end.vercel.app'],
+    origin: 'https://decor-x-front-end.vercel.app',
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
   });
 
   app.useGlobalPipes(
