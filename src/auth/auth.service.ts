@@ -142,20 +142,17 @@ export class AuthService {
   }
 
   async refreshToken(refreshToken: string) {
-    console.log('Incoming Token:', refreshToken);
-  const token = await this.refeshTokenRepo.findOne({
-    where: {
-      token: refreshToken,
-      expiryDate: MoreThan(new Date()),
-    },
-    relations: ['user'],
+
+    const token = await this.refeshTokenRepo.findOne({
+      where: {
+        token: refreshToken,
+        expiryDate: MoreThan(new Date()),
+      },
+      relations: ['user'],
     });
-    console.log('DB Token:', token);
-    console.log('Current Date:', new Date());
-    console.log('Expiry Date:', token?.expiryDate);
 
     if (!token) {
-      throw new UnauthorizedException(" Refresh Token is Invalid");
+      throw new UnauthorizedException("Refresh Token is Invalid");
     }
     await this.refeshTokenRepo.delete({
       token : refreshToken,

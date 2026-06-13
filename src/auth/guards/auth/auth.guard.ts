@@ -35,7 +35,7 @@ constructor(
     context: ExecutionContext,
   ): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Request>();
-    const token = this.ExtractTokenFromHeader(request);
+    const token = this.extractTokenFromCookie(request);
     if(!token){
       throw new UnauthorizedException("Invalid Token");
     }
@@ -98,7 +98,7 @@ constructor(
 
     return true;
   }
-  private ExtractTokenFromHeader(request : Request) : string | undefined {
-    return request.headers['authorization']?.split(' ')[1];    
+  private extractTokenFromCookie(request: Request): string | undefined {
+    return request.cookies?.['access_token'];
   }
 }
