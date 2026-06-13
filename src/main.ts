@@ -10,7 +10,7 @@ async function bootstrap() {
   app.use(cookieParser());
 
   app.enableCors({
-    origin: '*',
+    origin: 'https://decor-x-front-end.vercel.app',
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
   });
